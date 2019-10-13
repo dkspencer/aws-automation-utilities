@@ -161,6 +161,9 @@ def lambda_handler(event, context):
             save_output.main(
                 report, os.environ['elastic_ip'], os.environ['bucket'], os.environ['account'], os.environ['role'])
 
+    except Exception as e:
+        print(f'Exception in the elastic-ip utility: {e}')
+
 
 def get_security_groups(elb, sg_group, interfaces):
     """ Retrieve Load Balancer data associated with the network interface.
