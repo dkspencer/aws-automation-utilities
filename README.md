@@ -1,4 +1,4 @@
-# AWS Automation Utilities
+# AWS CyberSec Utilities
 ## Automation tools designed to be ran in AWS Lambda.
 
 These are a selection of AWS utilities I have written whilst in the workplace.
