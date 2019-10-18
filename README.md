@@ -28,5 +28,3 @@ Gathers data related to Elastic IP addresses, security groups and network interf
 #### security-groups.py
 Gathers ingress and egress rules for security groups in your accounts as well as
 network acls.
-
-NOTE: I'm not 100% sure these work, I don't have access to an AWS organisation with multiple accounts.
