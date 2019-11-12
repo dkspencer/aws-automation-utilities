@@ -21,9 +21,8 @@ def lambda_handler(event, context):
 
     """
 
-    print(f'Incoming Event: {e}')
+    print(f'Incoming Event: {event}')
 
-    accounts_list = list()
     report = dict()
 
     try:
@@ -31,135 +30,125 @@ def lambda_handler(event, context):
         accounts_response = get_account_list.main(
             os.environ['bucket'], os.environ['account'], os.environ['role'])
 
-        if not accounts_response:
-            return "No accounts list to use"
+        if accounts_response:
 
-        for account in accounts_response:
-            print(f'Processing account: {account}')
+            for account in accounts_response:
+                print(f'Processing account: {account}')
 
-            # Assume a role in the account.
-            temp_keys = assume_role.main(account, os.environ['role'])
+                # Assume a role in the account.
+                temp_keys = assume_role.main(account, os.environ['role'])
 
-            local_session = boto3.Session(
-                aws_access_key_id=temp_keys['AccessKeyId'],
-                aws_secret_access_key=temp_keys['SecretAccessKey'],
-                aws_session_token=temp_keys['SessionToken'],
-            )
+                local_session = boto3.Session(
+                    aws_access_key_id=temp_keys['AccessKeyId'],
+                    aws_secret_access_key=temp_keys['SecretAccessKey'],
+                    aws_session_token=temp_keys['SessionToken'],
+                )
 
-            ec2_session = local_session.client('ec2')
-            addresses = ec2_session.describe_addresses()
+                addresses = local_session.client('ec2').describe_addresses()
 
-            # Gather the association and disassociation events from CloudTrail
-            cloudtrail_session = local_session.client('cloudtrail')
+                # Gather the association and disassociation events from CloudTrail
+                cloudtrail_session = local_session.client('cloudtrail')
 
-            association_events = cloudtrail_session.lookup_events(LookupAttributes=[
-                {
-                    'AttributeKey': 'EventName',
-                    'AttributeValue': 'AssociateAddress'
-                }
-            ])
+                association_events = cloudtrail_session.lookup_events(LookupAttributes=[
+                    {'AttributeKey': 'EventName', 'AttributeValue': 'AssociateAddress'}])
 
-            disassociation_events = cloudtrail_session.lookup_events(LookupAttributes=[
-                {
-                    'AttributeKey': 'EventName',
-                    'AttributeValue': 'DisassociateAddress'
-                }
-            ])
+                disassociation_events = cloudtrail_session.lookup_events(LookupAttributes=[
+                    {'AttributeKey': 'EventName', 'AttributeValue': 'DisassociateAddress'}])
 
-            events = []
+                events = []
 
-            if 'Events' in association_events:
-                events = list(association_events['Events'])
+                # Add the events dict to the events list
+                if 'Events' in association_events and association_events['Events']:
+                    events = list(association_events['Events'])
 
-            if 'Events' in disassociation_events:
-                events.extend(disassociation_events['Events'])
+                # Extend the event list to create one
+                if 'Events' in disassociation_events and disassociation_events['Events']:
+                    events.extend(disassociation_events['Events'])
 
-            ips = dict()
+                ips = dict()
 
-            for address in addresses['Addresses']:
-                external_ip = address['PublicIp']
+                for address in addresses['Addresses']:
+                    external_ip = address['PublicIp']
 
-                if external_ip not in ips:
-                    ips.update({external_ip: {}})
+                    if external_ip not in ips:
+                        ips.update({external_ip: {}})
 
-                if 'AllocationId' in address:
-                    allocation_id = address['AllocationId']
+                    if 'AllocationId' in address:
+                        allocation_id = address['AllocationId']
 
-                    for event in events:
+                        for event in events:
 
-                        if 'EventTime' in event:
-                            event_time = event['EventTime']
+                            event_time = event['EventTime'] if 'EventTime' in event else None
+                            event_name = event['EventName'] if 'EventName' in event else None
 
-                            event_name = event['EventName']
+                            if event_name and event_name == 'DisassociateAddress':
+                                ips.update({external_ip: {event['EventName']: {
+                                           "Time": event_time.strftime("%H:%M:%S : %d-%m-%y")}}})
 
-                            if event_name == 'DisassociateAddress':
-                                ips.update({external_ip: {
-                                    event['EventName']: {"Time": event_time.strftime("%H:%M:%S : %d-%m-%y")}}})
-
-                            elif event_name == 'AssociateAddress':
+                            elif event_name and event_name == 'AssociateAddress':
 
                                 for resource in event['Resources']:
-                                    resource_type = resource['ResourceType']
 
-                                    if resource_type == 'AWS::EC2::EIP':
-                                        resource_name = resource['ResourceName']
+                                    resource_name = resource['ResourceName'] if resource[
+                                        'ResourceType'] == 'AWS::EC2::EIP' else None
 
-                                        if allocation_id in resource_name:
+                                    if resource_name and allocation_id in resource_name:
 
-                                            for resources in event['Resources']:
+                                        for resources in event['Resources']:
 
-                                                if 'AWS::EC2::Instance' in resources['ResourceType']:
-                                                    resource_name = resources['ResourceName']
+                                            resource_name = resource['ResourceName'] if 'AWS::EC2::Instance' in resource[
+                                                'ResourceType'] else None
 
-                                                    if ips.get(external_ip):
+                                            if ips.get(external_ip):
 
-                                                        ips.get(external_ip).update({
-                                                            event['EventName']: {
-                                                                "Time": event_time.strftime("%H:%M:%S : %d-%m-%y"),
-                                                                "EC2 Instance": resource_name}})
+                                                ips.get(external_ip).update({
+                                                    event['EventName']: {
+                                                        "Time": event_time.strftime("%H:%M:%S : %d-%m-%y"),
+                                                        "EC2 Instance": resource_name}})
 
-                                                    else:
-                                                        ips.update({external_ip: {
-                                                            event['EventName']: {
-                                                                "Time": event_time.strftime("%H:%M:%S : %d-%m-%y"),
-                                                                "EC2 Instance": resource_name}}})
-            report.update(
-                {
-                    account:
-                        {
-                            "IPS": ips
-                        }
-                })
+                                            else:
+                                                ips.update({external_ip: {
+                                                    event['EventName']: {
+                                                        "Time": event_time.strftime("%H:%M:%S : %d-%m-%y"),
+                                                        "EC2 Instance": resource_name}}})
+                report.update(
+                    {
+                        account:
+                            {
+                                "IPS": ips
+                            }
+                    })
 
-            session_elb = local_session.client('elbv2')
-            elb = session_elb.describe_load_balancers()
+                session_elb = local_session.client(
+                    'elbv2').describe_load_balancers()
 
-            interfaces = ec2.describe_network_interfaces()
+                interfaces = local_session.client(
+                    'ec2').describe_network_interfaces()
 
-            for interfaces in interfaces['NetworkInterfaces']:
-                if 'Groups' in interfaces:
-                    for groups in interfaces['Groups']:
-                        sg_group = groups['GroupId']
+                for interfaces in interfaces['NetworkInterfaces']:
+                    if 'Groups' in interfaces:
+                        for groups in interfaces['Groups']:
+                            sg_group = groups['GroupId']
 
-                        if get_security_groups(elb, sg_group, interfaces):
+                            if get_security_groups(session_elb, sg_group, interfaces):
 
-                            for addresses in interfaces['PrivateIpAddresses']:
+                                for addresses in interfaces['PrivateIpAddresses']:
 
-                                if 'Association' in addresses:
+                                    if 'Association' in addresses:
 
-                                    if 'PublicIp' in addresses['Association']:
+                                        if 'PublicIp' in addresses['Association']:
 
-                                        external_ip = addresses['Association']['PublicIp']
+                                            external_ip = addresses['Association']['PublicIp']
 
-                                        if external_ip not in ips:
-                                            ips.update({external_ip: {}})
+                                            if external_ip not in ips:
+                                                ips.update({external_ip: {}})
 
-                                            ips.update({external_ip: {
-                                                "LoadBalancer": get_security_groups(elb, sg_group, interfaces)
-                                            }})
+                                                ips.update({external_ip: {
+                                                    "LoadBalancer": get_security_groups(session_elb, sg_group, interfaces)
+                                                }})
 
-            save_output.main(
-                report, os.environ['elastic_ip'], os.environ['bucket'], os.environ['account'], os.environ['role'])
+                save_output.main(
+                    report, os.environ['elastic_ip'], os.environ['bucket'], os.environ['account'], os.environ['role'])
 
     except Exception as e:
         print(f'Exception in the elastic-ip utility: {e}')
@@ -183,7 +172,6 @@ def get_security_groups(elb, sg_group, interfaces):
         The name of the Load Balancer
 
     """
-
     for x in elb:
         if elb['LoadBalancers']:
 
